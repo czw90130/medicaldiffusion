@@ -44,6 +44,38 @@ def vanilla_d_loss(logits_real, logits_fake):
 
 
 class VQGAN(pl.LightningModule):
+    """
+    VQGAN配置项说明:
+
+    VQ-VAE超参数:
+    - cfg.model.embedding_dim: 编码本中向量的维度,影响编码器输出和解码器输入的特征表示能力。
+    - cfg.model.n_codes: 编码本的大小,即离散化后的潜在向量的数量,影响重构质量和生成多样性。
+
+    生成器(编码器-解码器)架构:
+    - cfg.model.n_hiddens: 编码器和解码器中隐藏层的通道数,影响生成器的表示能力。
+    - cfg.model.downsample: 编码器中下采样的倍数,影响编码器提取特征的尺度。
+    - cfg.dataset.image_channels: 输入图像的通道数。
+    - cfg.model.norm_type: 归一化层的类型,可选择"group"或"batch"。
+    - cfg.model.padding_type: 卷积层的填充类型,可选择"replicate"或其他。
+    - cfg.model.num_groups: GroupNorm中的组数,影响归一化层的计算。
+
+    判别器架构:
+    - cfg.model.disc_channels: 判别器中卷积层的初始通道数,影响判别器的表示能力。
+    - cfg.model.disc_layers: 判别器中卷积层的数量,影响判别器的深度。
+
+    损失函数和权重:
+    - cfg.model.disc_loss_type: 判别器损失函数的类型,可选择"vanilla"或"hinge"。
+    - cfg.model.gan_feat_weight: GAN特征匹配损失的权重,用于匹配真假样本在判别器中间层的统计信息。
+    - cfg.model.image_gan_weight: 图像GAN损失的权重,用于提高单帧图像的真实性。
+    - cfg.model.video_gan_weight: 视频GAN损失的权重,用于提高视频序列的真实性和连贯性。
+    - cfg.model.perceptual_weight: 感知损失的权重,用于提高生成图像的感知质量。
+    - cfg.model.l1_weight: L1重构损失的权重,用于提高生成图像的像素级精度。
+
+    其他:
+    - cfg.model.no_random_restart: 是否在编码本更新时禁用随机重启,影响编码本的稳定性。
+    - cfg.model.restart_thres: 编码本更新的重启阈值,影响编码本的更新策略。
+    - cfg.model.discriminator_iter_start: 判别器开始训练的迭代次数,影响GAN训练的平衡。
+    """
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg

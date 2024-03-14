@@ -6,4 +6,5 @@ num_frames: 32
 axes: [0, 1, 2]
 num_samples_per_npz: 100
 output_mode: 'random'
+image_channels: 3
 output_with_info: False

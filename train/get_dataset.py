@@ -1,8 +1,29 @@
-from dataset import MRNetDataset, BRATSDataset, ADNIDataset, DUKEDataset, LIDCDataset, DEFAULTDataset
+from dataset import MRNetDataset, BRATSDataset, ADNIDataset, DUKEDataset, LIDCDataset, Sag3DDataset, DEFAULTDataset
 from torch.utils.data import WeightedRandomSampler
 
 
 def get_dataset(cfg):
+    if cfg.dataset.name == 'SAG3D':
+        train_dataset = Sag3DDataset(
+            root_dir=cfg.dataset.train_root_dir,
+            target_size=cfg.dataset.target_size,
+            num_frames=cfg.dataset.num_frames,
+            axes=cfg.dataset.axes,
+            num_samples_per_npz=cfg.dataset.num_samples_per_npz,
+            output_mode=cfg.dataset.output_mode,
+            output_with_info=cfg.dataset.output_with_info
+        )
+        val_dataset = Sag3DDataset(
+            root_dir=cfg.dataset.val_root_dir,
+            target_size=cfg.dataset.target_size,
+            num_frames=cfg.dataset.num_frames,
+            axes=cfg.dataset.axes,
+            num_samples_per_npz=cfg.dataset.num_samples_per_npz,
+            output_mode=cfg.dataset.output_mode,
+            output_with_info=cfg.dataset.output_with_info
+        )
+        sampler = None
+        return train_dataset, val_dataset, sampler
     if cfg.dataset.name == 'MRNet':
         train_dataset = MRNetDataset(
             root_dir=cfg.dataset.root_dir, task=cfg.dataset.task, plane=cfg.dataset.plane, split='train')

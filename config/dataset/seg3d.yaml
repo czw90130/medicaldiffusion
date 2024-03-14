@@ -1,4 +1,9 @@
-name: ADNI
-root_dir: /data/ADNI/ADNI/
-image_channels: 3  
-augmentation: True
+name: SAG3D
+train_root_dir: /path/to/your/sag3d/train/dataset/
+val_root_dir: /path/to/your/sag3d/val/dataset/
+target_size: 256
+num_frames: 32
+axes: [0, 1, 2]
+num_samples_per_npz: 100
+output_mode: 'random'
+output_with_info: False

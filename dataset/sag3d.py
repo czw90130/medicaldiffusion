@@ -138,7 +138,7 @@ class SentenceBuilder:
         # 随机选择一个模板并返回
         return random.choice(templates).replace("  ", " ").replace(",,", ",").strip()
     
-class Sag3DDataset(SentenceBuilder):
+class Sag3DEncoder(SentenceBuilder):
     organ_color = {
         'skin': [228, 200, 166],
         'bone': [255, 255, 255],
@@ -173,67 +173,200 @@ class Sag3DDataset(SentenceBuilder):
         'belly_organs': [0, 255, 0],
         'brain':[128, 0, 128],
     }
-    def __init__(self, root_dir, hu_range=(-1000, 3000)):
+
+    def __init__(self, hu_range=(-1000, 3000)):
         self.hu_range = hu_range
-        self.root_dir = root_dir
+        self.mat = None
+        self.info = None
 
     def load_npz(self, npz_path):
-        data = np.load(npz_path)
-        return data['data'], data['info'].item()
+        data = np.load(npz_path, allow_pickle=True)
+        self.info = data['info'].item()
+        self.mat = torch.from_numpy(data['data'])
+        return self.mat, self.info
 
-    def interpolate_slice(self, slice_data, target_size):
+    def interpolate_slice(self, slice_data, target_size, crop):
+        # 获取输入的形状
         _, h, w, _ = slice_data.shape
-        scale_factor = target_size / max(h, w)
-        new_h, new_w = int(h * scale_factor), int(w * scale_factor)
-        slice_data = torch.from_numpy(slice_data).to(torch.float32)
-        slice_data = slice_data.permute(0, 3, 1, 2)
-        slice_data = F.interpolate(slice_data, size=(new_h, new_w), mode='bilinear', align_corners=False)
-        if new_h < target_size or new_w < target_size:
-            pad_h = target_size - new_h
-            pad_w = target_size - new_w
-            slice_data = F.pad(slice_data, (0, pad_w, 0, pad_h), mode='constant', value=-1)
-        return slice_data.permute(0, 2, 3, 1).numpy()
-
-    def normalize(self, data, min_val=-1, max_val=1):
-        data_min = np.min(data)
-        data_max = np.max(data)
-        return (max_val - min_val) * (data - data_min) / (data_max - data_min) + min_val
-
-    def to_frames(self, data, axis, start_index, target_size, num_frames=32):
-        assert 0 <= start_index < data.shape[axis] - num_frames, f"Invalid start index for axis {axis}"
-        
-        if axis == 0:
-            data = data[start_index:start_index+num_frames,:,:,:]
-        elif axis == 1:
-            data = data[:,start_index:start_index+num_frames,:,:]
+        if crop or isinstance(crop, int):
+            # 以最短边为准，选择随机起点裁剪到正方形
+            if h < w:
+                if not isinstance(crop, int):
+                    start = random.randint(0, w - h)
+                else:
+                    start = crop
+                if start + h > w:
+                    start = w - h
+                slice_data = slice_data[:, :, start:start+h, :]
+            else:
+                if not isinstance(crop, int):
+                    start = random.randint(0, h - w)
+                else:
+                    start = crop
+                if start + w > h:
+                    start = h - w
+                slice_data = slice_data[:, start:start+w, :, :]
+            slice_data = slice_data.permute(0, 3, 1, 2).to(torch.float32)
+            # 使用双线性插值进行缩放
+            slice_data = F.interpolate(slice_data, size=(target_size, target_size), mode='bilinear', align_corners=False)
         else:
-            data = data[:,:,start_index:start_index+num_frames,:]
+            # 计算缩放因子，以最长边为准
+            scale_factor = target_size / max(h, w)
+            # 计算新的高度和宽度
+            new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+            slice_data = slice_data.permute(0, 3, 1, 2).to(torch.float32)
+            # 使用双线性插值进行缩放
+            slice_data = F.interpolate(slice_data, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            # 如果短边小于 slice_size，将图像放在新的 slice_size * slice_size 的张量中间
+            if new_h < target_size or new_w < target_size:
+                pad_h = target_size - new_h
+                pad_w = target_size - new_w
+                slice_data = F.pad(slice_data, (pad_w//2, pad_w//2, pad_h//2, pad_h//2), mode='constant', value=-1)
+
+        return slice_data.permute(0, 2, 3, 1)[0]
+
+    def normalize(self, data, min_val=-1, max_val=1, mode='color'):
+        if mode == 'color':
+            data_min = 0
+            data_max = 255
+        elif mode == 'ct':
+            data_min, data_max = self.hu_range
+        else:
+            data_min = torch.min(data)
+            data_max = torch.max(data)
+        rst = (max_val - min_val) * (data - data_min) / (data_max - data_min) + min_val
+        return rst.clip(min_val, max_val)
+
+    def to_frames(self, axis, start_index, data=None, crop=None, target_size=256, num_frames=32):
+        if data is None:
+            data = self.mat
+        if data is None:
+            raise ValueError("No data loaded")
+        
+        assert 0 < start_index <= data.shape[axis] - num_frames, f"Invalid start index for axis {axis}: start_index:{start_index}, data_shape:{data.shape[axis]}"
+
+        if axis == 0:
+            clip_data = data[start_index:start_index+num_frames,:,:,:]
+        elif axis == 1:
+            clip_data = data[:,start_index:start_index+num_frames,:,:]
+        else:
+            clip_data = data[:,:,start_index:start_index+num_frames,:]
 
         frames = []
         for i in range(num_frames):
             if axis == 0:
-                slice_data = data[i:i+1,:,:,:]
+                slice_data = clip_data[i:i+1,:,:,:]
             elif axis == 1:
-                slice_data = data[:,i:i+1,:,:]
+                slice_data = clip_data[:,i:i+1,:,:].permute(1, 0, 2, 3)
             else:
-                slice_data = data[:,:,i:i+1,:]
-            slice_data = self.interpolate_slice(slice_data, target_size)
+                slice_data = clip_data[:,:,i:i+1,:].permute(2, 0, 1, 3)
+            slice_data = self.interpolate_slice(slice_data, target_size, crop)
             rgb_data = self.normalize(slice_data[...,:3])
-            ct_data = self.normalize(slice_data[...,3])
-            smpl_data = self.normalize(slice_data[...,4:])
-            frames.append(np.concatenate([rgb_data, ct_data, smpl_data], axis=-1))
-        frames = np.stack(frames, axis=0)
-        return frames
 
-    def __getitem__(self, index):
-        npz_path = os.path.join(self.root_dir, f'{index}.npz')
-        data, info = self.load_npz(npz_path)
-        age = info['age']
-        gender = info['gender']
-        axis = 0 # 指定轴
-        start_index = data.shape[axis] - 32 # 指定起始位置
-        frames = self.to_frames(data, axis=axis, start_index=start_index, target_size=256)
-        return frames, age, gender
+            ct_data = self.normalize(slice_data[...,3:4], mode='ct')
+            ct_data = torch.cat([ct_data, ct_data, ct_data], dim=-1)
+
+            smpl_data = self.normalize(slice_data[...,4:])
+
+            # frames.append({'sagement':rgb_data, 'ct':ct_data, 'smpl':smpl_data})
+            frames.append(torch.cat([rgb_data, ct_data, smpl_data], dim=-1))
+        frames = torch.stack(frames, dim=0)
+        return frames
+    
+class Sag3DDataset(torch.utils.data.Dataset):
+
+    def __init__(self, root_dir, target_size=256, num_frames=32, axes=[0, 1, 2], num_samples_per_npz=100, output_mode='random', output_with_info=True):
+        self.root_dir = root_dir
+        self.target_size = target_size
+        self.num_frames = num_frames
+        self.axes = axes
+        self.num_samples_per_npz = num_samples_per_npz
+        self.output_with_info = output_with_info
+        self.output_mode = output_mode
+        self.encoder = Sag3DEncoder()
+
+        self.npz_files = [os.path.join(root_dir, f) for f in os.listdir(root_dir) if f.endswith(".npz")]
+        self.data_list = self._generate_data_list()
+
+    def _is_all_black(self, mat, axis, start_index):
+        if axis == 0:
+            return torch.all(mat[start_index:start_index+self.num_frames, :, :, :3] == -1)
+        elif axis == 1:
+            return torch.all(mat[:, start_index:start_index+self.num_frames, :, :3] == -1)
+        else:
+            return torch.all(mat[:, :, start_index:start_index+self.num_frames, :3] == -1)
+    
+    def _generate_data_list(self):
+        data_list = []
+        for npz_file in self.npz_files:
+            mat,_  = self.encoder.load_npz(npz_file)
+            for _ in range(self.num_samples_per_npz):
+                axis = random.choice(self.axes)
+                max_start_index = mat.shape[axis] - self.num_frames
+                if max_start_index < 1:
+                    raise ValueError(f"Insufficient frames in {npz_file}, axis: {axis}")
+                
+                start_index = random.randint(0, max_start_index)
+                while self._is_all_black(mat, axis, start_index):
+                    start_index = random.randint(0, max_start_index)
+
+                crop = random.choice([True, True, True, False])
+                data_list.append({"npz_file": npz_file, "axis": axis, "start_index": start_index, "crop": crop})
+        return data_list
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        data_info = self.data_list[idx]
+        npz_file, axis, start_index, crop = data_info["npz_file"], data_info["axis"], data_info["start_index"], data_info["crop"]
+
+        mat, info = self.encoder.load_npz(npz_file)
+        frames = self.encoder.to_frames(axis, start_index, mat, crop, self.target_size, self.num_frames)
+        if self.output_mode == 'all':
+            pass
+        elif self.output_mode == 'segment':
+            frames = frames[..., :3]
+        elif self.output_mode == 'ctvalue':
+            frames = frames[..., 3:6]
+        elif self.output_mode == 'smpl':
+            frames = frames[..., 6:]
+        else:
+            frames = random.choice([frames[..., :3], frames[..., 3:6], frames[..., 6:]])
+        output = {'data':frames}
+        if self.output_with_info:
+            output['info'] = info
+        return output
+    
+if __name__ == "__main__":
+    import imageio
+
+    npz_path = 'testdata/'  # 替换为您的npz文件路径
+    out_gif_path = 'testdata/result/output.gif'
+    
+    dataset = Sag3DDataset(npz_path)
+    print('dataset:', len(dataset))
+    frames = dataset[0]
+
+    gif_frames = []
+    # 逐帧处理数据
+    for frame in frames:
+        frame = frame.numpy()
+        # # 将归一化的数据缩放到[0, 255]的范围内,并转换为uint8类型
+        # rgb_data = ((frame[..., :3] + 1) * 127.5).astype(np.uint8)
+        # ct_data = ((frame[..., 3:6] + 1) * 127.5).astype(np.uint8)
+        # smpl_data = ((frame[..., 6:] + 1) * 127.5).astype(np.uint8)
+
+        # # 将RGB、CT和SMPL数据水平拼接起来
+        # img = np.concatenate([rgb_data, ct_data, smpl_data], axis=1)
+        img = ((frame + 1) * 127.5).astype(np.uint8)
+
+        # 将图像添加到gif_frames列表中
+        gif_frames.append(img)
+
+    # 使用imageio创建GIF图像
+    imageio.mimsave(out_gif_path, gif_frames, fps=3)
+
         
     
         
